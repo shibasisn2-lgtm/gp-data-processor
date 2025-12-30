@@ -1,14 +1,8 @@
-# @title 📂 Gram Panchayat PDF Processor (Smart-Split for Receipts/Payments)
-# @markdown ### Instructions:
-# @markdown 1. Run this cell.
-# @markdown 2. Upload your 5 (or more) PDFs.
-# @markdown 3. The script will dynamically find the "PAYMENTS" column and extract data.
-
-import os
-import re
+import streamlit as st
 import pandas as pd
 import pdfplumber
-from google.colab import files
+import re
+import io
 
 # --- 1. CONFIGURATION & MAPPING ---
 HEAD_MAPPING = {
@@ -80,8 +74,6 @@ def parse_text_block(text_lines, dist, block, gp, section_type):
             continue
 
         # 4. Object Head / Transaction Row
-        # This regex is more flexible for amounts with spaces or decimals
-        # Captures: CODE | DESCRIPTION | AMOUNT
         match_obj = re.search(r'^([A-Z0-9]{2,3})\s+(.*?)\s+([\d,]+\.?\d*)$', line)
         
         if match_obj:
@@ -113,7 +105,7 @@ def parse_text_block(text_lines, dist, block, gp, section_type):
     return data_rows
 
 # --- 3. PDF PROCESSING ENGINE (Smart Split) ---
-def process_pdf(pdf_path, filename):
+def process_pdf(file_obj, filename):
     # Filename parsing
     try:
         parts = filename.replace('.pdf', '').split(' ')
@@ -126,7 +118,7 @@ def process_pdf(pdf_path, filename):
     file_receipts = []
     file_payments = []
 
-    with pdfplumber.open(pdf_path) as pdf:
+    with pdfplumber.open(file_obj) as pdf:
         for page in pdf.pages:
             width = page.width
             height = page.height
@@ -162,48 +154,65 @@ def process_pdf(pdf_path, filename):
 
     return file_receipts, file_payments
 
-# --- 4. MAIN EXECUTION ---
-def main():
-    print("Please upload your PDF files now...")
-    uploaded = files.upload()
-    
-    all_receipts = []
-    all_payments = []
-    
-    print("\nStarting Processing...")
-    
-    for filename, content in uploaded.items():
-        with open(filename, 'wb') as f:
-            f.write(content)
+# --- 4. STREAMLIT UI ---
+st.set_page_config(page_title="GP Finance Processor", page_icon="📂")
+
+st.title("📂 Gram Panchayat Data Processor")
+st.write("Upload your PDF files below. The system uses 'Smart Split' to separate Receipts and Payments.")
+
+uploaded_files = st.file_uploader("Upload PDF Files", type="pdf", accept_multiple_files=True)
+
+if uploaded_files:
+    if st.button(f"Process {len(uploaded_files)} Files"):
+        all_receipts = []
+        all_payments = []
         
-        try:
-            r_data, p_data = process_pdf(filename, filename)
+        progress_bar = st.progress(0)
+        
+        for i, file in enumerate(uploaded_files):
+            # Streamlit uploads are file-like objects, pdfplumber can read them directly
+            r_data, p_data = process_pdf(file, file.name)
             all_receipts.extend(r_data)
             all_payments.extend(p_data)
-            print(f"✅ {filename}: Receipts: {len(r_data)} | Payments: {len(p_data)}")
-        except Exception as e:
-            print(f"❌ Error {filename}: {e}")
-        
-        os.remove(filename)
+            progress_bar.progress((i + 1) / len(uploaded_files))
+            
+        st.success("Processing Complete!")
 
-    # Output Tables
-    print("\n" + "="*30)
-    if all_receipts:
-        df_r = pd.DataFrame(all_receipts)
-        df_r.to_csv('Consolidated_Receipts.csv', index=False)
-        print(f"Receipts Table Created: {len(df_r)} rows")
-        files.download('Consolidated_Receipts.csv')
-    else:
-        print("No Receipts found.")
+        # --- TABS FOR VIEWING DATA ---
+        tab1, tab2 = st.tabs(["Receipts", "Payments"])
 
-    if all_payments:
-        df_p = pd.DataFrame(all_payments)
-        df_p.to_csv('Consolidated_Payments.csv', index=False)
-        print(f"Payments Table Created: {len(df_p)} rows")
-        files.download('Consolidated_Payments.csv')
-    else:
-        print("No Payments found.")
+        with tab1:
+            if all_receipts:
+                df_r = pd.DataFrame(all_receipts)
+                st.write(f"Found {len(df_r)} Receipt records")
+                st.dataframe(df_r)
+                
+                # Convert to CSV
+                csv_r = df_r.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    "Download Receipts CSV",
+                    csv_r,
+                    "Consolidated_Receipts.csv",
+                    "text/csv",
+                    key='download-r'
+                )
+            else:
+                st.warning("No Receipts found.")
 
-if __name__ == "__main__":
-    os.system('pip install pdfplumber')
-    main()
+        with tab2:
+            if all_payments:
+                df_p = pd.DataFrame(all_payments)
+                st.write(f"Found {len(df_p)} Payment records")
+                st.dataframe(df_p)
+                
+                # Convert to CSV
+                csv_p = df_p.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    "Download Payments CSV",
+                    csv_p,
+                    "Consolidated_Payments.csv",
+                    "text/csv",
+                    key='download-p'
+                )
+            else:
+                st.warning("No Payments found. (Check if the PDF layout matches the expected Receipts-Left / Payments-Right format)")
